@@ -91,3 +91,31 @@ class MotionObjectDetector:
         }
 
         return detected_objects
+
+detector = MotionObjectDetector()
+camera = cv2.VideoCapture(0)
+
+if not camera.isOpened():
+    raise RuntimeError('Could not open camera.')
+
+try:
+    while True:
+        success, frame = camera.read()
+
+        if not success:
+            raise RuntimeError('Failed to read frame from camera.')
+
+        for x1, y1, x2, y2, object_id in detector.update_frame(frame):
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(
+                frame, f"Object {object_id}", (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
+            )
+
+        cv2.imshow("Detector de movimento", frame)
+
+        if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+            break
+finally:
+    camera.release()
+    cv2.destroyAllWindows()
