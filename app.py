@@ -1,121 +1,144 @@
-import cv2
-import math
+from dataclasses import dataclass
+from typing import Any
 
-class MotionObjectDetector:
+import cv2
+
+
+@dataclass(frozen=True)
+class Detection:
+    """A detected object bounding box and its confidence."""
+
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    class_name: str
+    confidence: float
+
+
+class ObjectDetector:
     def __init__(
         self,
-        minimum_area=500,
-        max_distance=80,
-        forgotten_frames_limit=20,
-        warmup_frames=30,
-    ):
-        self.background_subtractor = cv2.createBackgroundSubtractorMOG2(
-            history=120,
-            varThreshold=20,
-            detectShadows=False,
-        )
-        self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        self.minimum_area = minimum_area
-        self.max_distance = max_distance
-        self.forgotten_frames_limit = forgotten_frames_limit
-        self.warmup_frames = warmup_frames
-        self.processed_frames = 0
-        self.next_object_id = 1
-        self.object_trails = {}
+        target_class: str = "car",
+        model_path: str = "yolo11n.pt",
+        confidence: float = 0.35,
+        image_size: int = 640,
+    ) -> None:
+        if not target_class.strip():
+            raise ValueError("target_class must not be empty")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        if image_size <= 0:
+            raise ValueError("image_size must be greater than zero")
 
-    def update_frame(self, frame):
-        """Detect moving objects and return boxes as (x1, y1, x2, y2, object_id)."""
+        try:
+            from ultralytics import YOLO
+        except ImportError as error:
+            raise RuntimeError(
+                "Ultralytics is not installed. Run: "
+                "python -m pip install -r requirements.txt"
+            ) from error
+
+        self.model = YOLO(model_path)
+        self.target_class = target_class.strip()
+        self.confidence = confidence
+        self.image_size = image_size
+        self.class_names = self._normalize_class_names(self.model.names)
+
+        matching_ids = [
+            class_id
+            for class_id, class_name in self.class_names.items()
+            if class_name.casefold() == self.target_class.casefold()
+        ]
+        if not matching_ids:
+            available_classes = ", ".join(self.class_names.values())
+            raise ValueError(
+                f"Unknown class '{self.target_class}'. "
+                f"Available classes: {available_classes}"
+            )
+
+        self.target_class_id = matching_ids[0]
+        self.target_class = self.class_names[self.target_class_id]
+
+    @staticmethod
+    def _normalize_class_names(names: Any) -> dict[int, str]:
+        if isinstance(names, dict):
+            return {int(class_id): str(name) for class_id, name in names.items()}
+        return {class_id: str(name) for class_id, name in enumerate(names)}
+
+    def detect(self, frame: cv2.typing.MatLike) -> list[Detection]:
+        """Detect only the configured class in a BGR camera frame."""
         if frame is None or frame.size == 0:
             raise ValueError("frame must be a non-empty image")
 
-        mask = self.background_subtractor.apply(frame, learningRate=0.02)
-        self.processed_frames += 1
-
-        mask = cv2.morphologyEx(
-            mask, cv2.MORPH_OPEN, self.kernel, iterations=1
+        results = self.model.predict(
+            source=frame,
+            classes=[self.target_class_id],
+            conf=self.confidence,
+            imgsz=self.image_size,
+            verbose=False,
         )
-        mask = cv2.dilate(mask, self.kernel, iterations=2)
-
-        contours, _ = cv2.findContours(
-            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        detections = []
-        for contour in contours:
-            if cv2.contourArea(contour) < self.minimum_area:
-                continue
-
-            x, y, width, height = cv2.boundingRect(contour)
-            center = (x + width // 2, y + height // 2)
-            detections.append((x, y, x + width, y + height, center))
-
-        if self.processed_frames <= self.warmup_frames:
+        if not results or results[0].boxes is None:
             return []
 
-        active_ids = set()
-        detected_objects = []
+        boxes = results[0].boxes
+        coordinates = boxes.xyxy.cpu().tolist()
+        confidences = boxes.conf.cpu().tolist()
 
-        for x1, y1, x2, y2, center in detections:
-            matched_id = None
-            shortest_distance = self.max_distance
+        return [
+            Detection(
+                x1=int(coordinates[index][0]),
+                y1=int(coordinates[index][1]),
+                x2=int(coordinates[index][2]),
+                y2=int(coordinates[index][3]),
+                class_name=self.target_class,
+                confidence=float(confidences[index]),
+            )
+            for index in range(len(coordinates))
+        ]
 
-            for object_id, trail in self.object_trails.items():
-                if object_id in active_ids:
-                    continue
 
-                previous_x, previous_y, _ = trail
-                distance = math.hypot(
-                    center[0] - previous_x,
-                    center[1] - previous_y,
+def main() -> None:
+    # Change this value to another class supported by the selected YOLO model.
+    detector = ObjectDetector(target_class="cat")
+    camera = cv2.VideoCapture(0)
+
+    if not camera.isOpened():
+        camera.release()
+        raise RuntimeError("Could not open camera.")
+
+    try:
+        while True:
+            success, frame = camera.read()
+            if not success:
+                raise RuntimeError("Failed to read frame from camera.")
+
+            for detection in detector.detect(frame):
+                cv2.rectangle(
+                    frame,
+                    (detection.x1, detection.y1),
+                    (detection.x2, detection.y2),
+                    (0, 255, 0),
+                    2,
                 )
-                if distance < shortest_distance:
-                    matched_id = object_id
-                    shortest_distance = distance
+                label = f"{detection.class_name} {detection.confidence:.0%}"
+                cv2.putText(
+                    frame,
+                    label,
+                    (detection.x1, max(detection.y1 - 10, 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2,
+                )
 
-            if matched_id is None:
-                matched_id = self.next_object_id
-                self.next_object_id += 1
+            cv2.imshow("YOLO object detector - Q to quit", frame)
+            if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                break
+    finally:
+        camera.release()
+        cv2.destroyAllWindows()
 
-            active_ids.add(matched_id)
-            self.object_trails[matched_id] = (
-                center[0],
-                center[1],
-                self.processed_frames,
-            )
-            detected_objects.append((x1, y1, x2, y2, matched_id))
 
-        self.object_trails = {
-            object_id: trail
-            for object_id, trail in self.object_trails.items()
-            if self.processed_frames - trail[2] <= self.forgotten_frames_limit
-        }
-
-        return detected_objects
-
-detector = MotionObjectDetector()
-camera = cv2.VideoCapture(0)
-
-if not camera.isOpened():
-    raise RuntimeError('Could not open camera.')
-
-try:
-    while True:
-        success, frame = camera.read()
-
-        if not success:
-            raise RuntimeError('Failed to read frame from camera.')
-
-        for x1, y1, x2, y2, object_id in detector.update_frame(frame):
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(
-                frame, f"Object {object_id}", (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
-            )
-
-        cv2.imshow("Detector de movimento", frame)
-
-        if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
-            break
-finally:
-    camera.release()
-    cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()
