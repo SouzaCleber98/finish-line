@@ -1,1 +1,4 @@
-yolo11n.pt
+*.pt
+datasets/
+runs/
+__pycache__/
