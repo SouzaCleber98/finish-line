@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 from typing import Any
 
 import cv2
@@ -19,9 +20,9 @@ class Detection:
 class ObjectDetector:
     def __init__(
         self,
-        target_class: str = "car",
-        model_path: str = "yolo11n.pt",
-        confidence: float = 0.35,
+        target_class: str = "toy-car",
+        model_path: str = "runs/detect/toy-cars/weights/best.pt",
+        confidence: float = 0.75,
         image_size: int = 640,
     ) -> None:
         if not target_class.strip():
@@ -99,8 +100,15 @@ class ObjectDetector:
 
 
 def main() -> None:
-    # Change this value to another class supported by the selected YOLO model.
-    detector = ObjectDetector(target_class="cat")
+    target_class = os.getenv("YOLO_TARGET_CLASS", "toy-car")
+    model_path = os.getenv(
+        "YOLO_MODEL_PATH",
+        "runs/detect/toy-cars/weights/best.pt",
+    )
+    detector = ObjectDetector(
+        target_class=target_class,
+        model_path=model_path,
+    )
     camera = cv2.VideoCapture(0)
 
     if not camera.isOpened():
