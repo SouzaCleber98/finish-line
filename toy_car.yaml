@@ -1,0 +1,7 @@
+path: datasets/toy_car
+train: train/images
+val: valid/images
+test: test/images
+
+names:
+  0: toy-car
